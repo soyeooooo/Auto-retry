@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "pytest-auto-retry"
+version = "0.1.0"
+description = "Pytest plugin for automatic test retry with Selenium driver reset"
+requires-python = ">=3.9"
+dependencies = ["pytest>=7"]
+
+[project.optional-dependencies]
+ai = ["openai", "requests"]
+slack = ["requests"]
+
+[project.entry-points."pytest11"]
+auto_retry = "pytest_auto_retry.plugin"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pytest_auto_retry*"]
