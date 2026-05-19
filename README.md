@@ -75,14 +75,13 @@ pytest --auto-retry-max=3
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
-| `AI_LOG_ANALYZER_ENABLED` | `false` | AI 분석 활성화 |
 | `AI_LOG_ANALYZER_PROVIDER` | `ollama` | `ollama` 또는 `openai` |
 | `OLLAMA_MODEL` | `llama3` | Ollama 모델명 |
 | `OLLAMA_ENDPOINT` | `http://localhost:11434/api/generate` | Ollama 엔드포인트 |
 | `OPENAI_API_KEY` | | OpenAI API 키 |
 | `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI 모델명 |
 | `AI_LOG_ANALYZER_OUTPUT_DIR` | `Report/ai_analysis` | 분석 리포트 저장 경로 |
-| `AI_LOG_ANALYZER_TIMEOUT` | `30` | AI 요청 타임아웃 (초) |
+| `AI_LOG_ANALYZER_TIMEOUT` | `120` | AI 요청 타임아웃 (초) |
 | `AI_LOG_ANALYZER_MAX_CHARS` | `12000` | 로그 최대 문자 수 |
 
 #### Slack
@@ -106,7 +105,7 @@ pytest --auto-retry-max=3
    - **Timeout/Network** → `auto_retry_max` 횟수만큼 재시도, Selenium 드라이버 리셋
    - **Assertion/기타** → 즉시 최종 실패 처리
 3. 최종 실패 시:
-   - AI 분석 리포트 생성 (`Report/ai_analysis/*.md`)
+   - AI 분석 리포트 생성 (`Report/ai_analysis/ai_analysis.txt`)
    - Slack/Teams 웹훅 알림 발송
 
 ## Project Structure
