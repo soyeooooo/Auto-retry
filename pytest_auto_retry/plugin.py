@@ -41,7 +41,7 @@ from urllib import error, request
 import pytest
 
 
-AI_LOG_ANALYZER_DEFAULT_TIMEOUT  = 30
+AI_LOG_ANALYZER_DEFAULT_TIMEOUT  = 120
 AI_LOG_ANALYZER_DEFAULT_MAX_CHARS = 12000
 
 TIMEOUT_KEYWORDS = (
@@ -66,6 +66,12 @@ def pytest_addoption(parser):
     group = parser.getgroup("auto_retry")
     group.addoption("--auto-retry-max", type=int, default=None,
                     help="재시도 횟수 (기본값: auto_retry_max ini 옵션 또는 2)")
+
+def pytest_sessionstart(session):
+    report_path = _ai_output_dir() / "ai_analysis.txt"
+    if report_path.exists():
+        report_path.unlink()
+
 
 def pytest_configure(config):
     config.addinivalue_line(
@@ -263,6 +269,7 @@ def _post_to_teams(message: str) -> None:
                 "type": "AdaptiveCard",
                 "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
                 "version": "1.2",
+                "fallbackText": message,
                 "body": [{"type": "TextBlock", "text": message, "wrap": True}],
             },
         }],
@@ -342,7 +349,11 @@ def _build_ai_prompt(test_name: str, error_type: str, failure_text: str,
         "3. 재시도 적합성\n\n"
         "각 섹션은 명확하고 실용적으로 작성하세요.\n"
         "'수정 권장 사항'은 가장 가능성 높은 수정 방법 1개만 작성하세요.\n"
-        "스택에서 실제 실패 지점을 기준으로 파일 경로·함수명을 직접 인용하고, 실제 코드 스니펫으로 수정 방법을 제시하세요.\n"
+        "스택에서 실제 실패 지점(가장 하위 프로젝트 파일)을 기준으로 판단하세요.\n"
+        "파일 경로와 함수명을 직접 인용하고, 수정 방법을 실제 코드 스니펫으로 제시하세요.\n"
+        "예시 형태: `파일경로:함수명` 에서 `기존코드` 를 `수정코드` 로 변경하세요.\n"
+        "locator가 있으면 그 locator를 직접 코드 스니펫에 포함하세요.\n"
+        "'~확인하세요' '~추가하세요' 같은 지시만 쓰지 말고, 반드시 실제 코드 예시를 함께 작성하세요.\n"
         "각 항목 사이에는 반드시 빈 줄을 하나 추가하세요.\n\n"
         f"추출 컨텍스트:\n{chr(10).join(context_lines) if context_lines else '- 없음'}\n\n"
         "실패 로그:\n"
@@ -418,19 +429,22 @@ def save_analysis_report(test_name: str, error_type: str,
                          failure_text: str, analysis: str) -> str:
     output_dir = _ai_output_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
-    safe_name = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in test_name)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path      = output_dir / f"{safe_name}_{timestamp}.md"
+    path      = output_dir / "ai_analysis.txt"
     formatted = re.sub(r'(?m)(?<!\n)\n(\d+\.\s)', r'\n\n\1', analysis.strip())
     body = (
-        "# AI Failure Analysis\n\n"
-        f"- Test: `{test_name}`\n"
-        f"- Error Type: `{error_type or 'Unknown'}`\n"
-        f"- Generated At: `{datetime.now().isoformat(timespec='seconds')}`\n\n"
-        f"## Analysis\n\n{formatted or 'No analysis returned.'}\n\n"
-        f"## Failure Excerpt\n\n```text\n{failure_text[-_ai_max_chars():]}\n```\n"
+        "AI Failure Analysis\n"
+        "===================\n\n"
+        f"Test: {test_name}\n"
+        f"Error Type: {error_type or 'Unknown'}\n"
+        f"Generated At: {datetime.now().isoformat(timespec='seconds')}\n\n"
+        f"Analysis\n"
+        f"--------\n\n{formatted or 'No analysis returned.'}\n\n"
+        f"Failure Excerpt\n"
+        f"---------------\n\n{failure_text[-_ai_max_chars():]}\n"
+        "\n" + "=" * 50 + "\n\n"
     )
-    path.write_text(body, encoding="utf-8")
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(body)
     return str(path)
 
 
@@ -476,8 +490,10 @@ def pytest_runtest_protocol(item, nextitem):
         is_last_attempt = attempt == retry_max
         reports         = runtestprotocol(item, nextitem=nextitem, log=False)
         call_report     = next((r for r in reports if r.when == "call"), None)
-        succeeded       = not call_report or not call_report.failed
-        error_type      = "" if succeeded else _error_type(_classification_text(call_report))
+        failed_report   = next((r for r in reports if r.failed), None)
+        succeeded       = failed_report is None
+        active_report   = call_report or failed_report
+        error_type      = "" if succeeded else _error_type(_classification_text(active_report))
         should_retry    = bool(error_type) and not is_last_attempt
 
         if not should_retry:
@@ -488,9 +504,9 @@ def pytest_runtest_protocol(item, nextitem):
             elif not succeeded:
                 _on_final_failure(
                     item,
-                    str(call_report.longrepr or ""),
+                    str(active_report.longrepr or ""),
                     error_type,
-                    _classification_text(call_report),
+                    _classification_text(active_report),
                 )
             return True
 
