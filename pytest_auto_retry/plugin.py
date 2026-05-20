@@ -68,9 +68,18 @@ def pytest_addoption(parser):
                     help="재시도 횟수 (기본값: auto_retry_max ini 옵션 또는 2)")
 
 def pytest_sessionstart(session):
-    report_path = _ai_output_dir() / "ai_analysis.txt"
+    output_dir = _ai_output_dir()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    report_path = output_dir / "ai_analysis.txt"
     if report_path.exists():
         report_path.unlink()
+
+
+def pytest_sessionfinish(session, exitstatus):
+    report_path = _ai_output_dir() / "ai_analysis.txt"
+    if not report_path.exists():
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write("전부 pass입니다 :)!\n")
 
 
 def pytest_configure(config):

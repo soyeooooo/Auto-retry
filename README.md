@@ -107,6 +107,8 @@ pytest --auto-retry-max=3
 3. 최종 실패 시:
    - AI 분석 리포트 생성 (`Report/ai_analysis/ai_analysis.txt`)
    - Slack/Teams 웹훅 알림 발송
+4. 세션 시작 시 `Report/ai_analysis` 디렉토리를 미리 생성 (CI 파일 전송 단계 오류 방지)
+5. 전체 pass 시 리포트 파일에 `전부 pass입니다 :)!` 메시지 기록
 
 ## Project Structure
 
