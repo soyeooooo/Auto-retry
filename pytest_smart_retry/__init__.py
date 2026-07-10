@@ -1,0 +1,1 @@
+from pytest_smart_retry.plugin import *  # noqa: F401, F403

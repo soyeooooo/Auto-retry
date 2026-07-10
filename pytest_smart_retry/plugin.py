@@ -2,9 +2,9 @@
 AI 로그 분석과 Slack/Teams 알림을 선택적으로 지원하는 pytest 자동 재시도 플러그인.
 
 사용 방법:
-1. pip install pytest-auto-retry
+1. pip install pytest-smart-retry
 2. conftest.py 없이도 자동 등록됩니다 (pytest11 entry point).
-   직접 등록하려면: pytest_plugins = ['pytest_auto_retry']
+   직접 등록하려면: pytest_plugins = ['pytest_smart_retry']
 
 동작 방식:
 - @pytest.mark.auto_retry 가 붙은 테스트만 이 플러그인의 대상입니다.
@@ -262,14 +262,126 @@ def _teams_notify_enabled() -> bool:
 def _strip_markdown(text: str) -> str:
     text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
     text = re.sub(r'^-{3,}$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^[\-\*]\s+', '', text, flags=re.MULTILINE)
     text = re.sub(r'[Ѐ-ӿ]+', '', text)
+    text = re.sub(r'^(\d+\.\s+\S[^\n]*)', r'**\1**', text, flags=re.MULTILINE)
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
-def _post_to_teams(message: str) -> None:
+
+def _code_block(code: str) -> dict:
+    """모노스페이스 + 회색 배경 컨테이너"""
+    safe_lines = [
+        re.sub(r'^(\s*)([#>\-\*\+])', r'\1\\\2', line)
+        for line in code.strip().splitlines()
+    ]
+    return {
+        "type": "Container",
+        "style": "emphasis",
+        "items": [{
+            "type": "TextBlock",
+            "text": "\n".join(safe_lines),
+            "wrap": True,
+            "size": "Small",
+            "fontType": "Monospace",
+        }],
+    }
+
+
+def _build_analysis_blocks(analysis: str, limit: int = 1200) -> list:
+    text = _slack_excerpt(analysis, limit=limit)
+    text = re.sub(r'[Ѐ-ӿ]+', '', text)
+    text = re.sub(r'Tests?/[^\s:]+(?:::[^\s:]+)?:?\s*', '', text)
+    text = re.sub(r'^\s*\d+:\s*(Failed|Error)[^\n]*', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^\s*E\s+(Failed|Error)[^\n]*', '', text, flags=re.MULTILINE)
+
+    code_store = {}
+    def stash_code(m):
+        key = f"\x00CODE{len(code_store)}\x00"
+        code_store[key] = m.group(1).strip()
+        return key
+    text = re.sub(r'```(?:\w+)?\n?([\s\S]*?)```', stash_code, text)
+
+    SECTION_HEADERS = r'재시도|가능성|수정\s*권장|기존\s*코드|수정\s*코드'
+    code_label_pattern = re.compile(
+        r'(기존\s*코드|수정\s*코드)\s*:\s*\n?([\s\S]+?)'
+        r'(?=\n\s*(?:' + SECTION_HEADERS + r')\s*[:\n]|\n\s*\d+\.\s|\Z)',
+        re.IGNORECASE,
+    )
+    label_map = {}
+    def stash_label(m):
+        key = f"\x00LABEL{len(label_map)}\x00"
+        label = "📄 기존코드" if '기존' in m.group(1) else "✅ 수정코드"
+        code = m.group(2).strip()
+        for k, v in code_store.items():
+            code = code.replace(k, v)
+        label_map[key] = (label, code)
+        return key
+    text = code_label_pattern.sub(stash_label, text)
+
+    blocks = []
+    tokens = re.split(r'(\x00(?:CODE|LABEL)\d+\x00)', text)
+    pending = {}
+
+    def flush_pair():
+        if not pending:
+            return []
+        result = []
+        if "old" in pending:
+            result.append({"type": "TextBlock", "text": "📄 기존코드", "weight": "Bolder", "size": "Small"})
+            result.append(_code_block(pending["old"]))
+        if "new" in pending:
+            if "old" in pending:
+                result.append({"type": "TextBlock", "text": "↓", "horizontalAlignment": "Center", "size": "Medium", "color": "Accent"})
+            result.append({"type": "TextBlock", "text": "✅ 수정코드", "weight": "Bolder", "size": "Small"})
+            result.append(_code_block(pending["new"]))
+        pending.clear()
+        return result
+
+    for token in tokens:
+        if token in code_store:
+            blocks.extend(flush_pair())
+            blocks.append(_code_block(code_store[token]))
+        elif token in label_map:
+            label, code = label_map[token]
+            if label == "📄 기존코드":
+                pending["old"] = code
+            else:
+                pending["new"] = code
+            if "old" in pending and "new" in pending:
+                blocks.extend(flush_pair())
+        else:
+            cleaned = _strip_markdown(token)
+            if cleaned.strip():
+                blocks.extend(flush_pair())
+                blocks.append({"type": "TextBlock", "text": cleaned, "wrap": True, "size": "Small"})
+
+    blocks.extend(flush_pair())
+    return blocks
+
+
+def _notify_teams_final_failure(test_name, error_type, failure_text, analysis="", report_path=""):
+    if not _teams_notify_enabled():
+        return
+
+    body = [
+        {"type": "TextBlock", "text": "🚨 auto_retry Final Failure",
+         "size": "Large", "weight": "Bolder", "color": "Attention"},
+        {"type": "FactSet", "facts": [
+            {"title": "Test", "value": test_name},
+            {"title": "Error Type", "value": error_type or "Unknown"},
+            {"title": "Time", "value": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+        ]},
+    ]
+    if analysis:
+        body.append({"type": "TextBlock", "text": "─" * 30, "color": "Default"})
+        body.append({"type": "TextBlock", "text": "🤖 AI 분석", "weight": "Bolder", "size": "Medium"})
+        body.extend(_build_analysis_blocks(analysis, limit=1200))
+
     webhook_url = _teams_webhook_url()
     if not webhook_url:
-        raise RuntimeError("TEAMS_WEBHOOK_URL is not set")
+        return
+
     payload = {
         "type": "message",
         "attachments": [{
@@ -278,36 +390,17 @@ def _post_to_teams(message: str) -> None:
                 "type": "AdaptiveCard",
                 "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
                 "version": "1.2",
-                "fallbackText": message,
-                "body": [{"type": "TextBlock", "text": message, "wrap": True}],
+                "fallbackText": f"🚨 {test_name} - {error_type}",
+                "body": body,
             },
         }],
     }
-    body = json.dumps(payload).encode("utf-8")
-    req  = request.Request(url=webhook_url, data=body,
-                           headers={"Content-Type": "application/json"}, method="POST")
+    body_bytes = json.dumps(payload).encode("utf-8")
+    req = request.Request(url=webhook_url, data=body_bytes,
+                          headers={"Content-Type": "application/json"}, method="POST")
     try:
         with request.urlopen(req, timeout=_ai_timeout()) as resp:
             resp.read()
-    except error.HTTPError as exc:
-        raise RuntimeError(f"HTTP {exc.code}: {exc.read().decode('utf-8', errors='replace')}") from exc
-    except error.URLError as exc:
-        raise RuntimeError(f"Connection error: {exc.reason}") from exc
-
-def _notify_teams_final_failure(test_name, error_type, failure_text, analysis="", report_path=""):
-    if not _teams_notify_enabled():
-        return
-    lines = [
-        "🚨 auto_retry final failure",
-        f"- Test: {test_name}",
-        f"- Error Type: {error_type or 'Unknown'}",
-    ]
-    if report_path:
-        lines.append(f"- Report: {report_path}")
-    if analysis:
-        lines.append(f"- AI Summary:\n{_strip_markdown(_slack_excerpt(analysis))}")
-    try:
-        _post_to_teams("\n".join(lines))
     except Exception as exc:
         logging.error(f"[teams notify failed] {test_name}: {exc}")
 
@@ -323,6 +416,7 @@ def _extract_failure_context(failure_text: str, frame_pattern: str = "") -> dict
         "frames": frames[:8],
         "top_frame": frames[0] if frames else "",
         "last_project_frame": frames[-1] if frames else "",
+        "caller_frame": frames[-1] if frames else "",
         "locator": locator_match.group(1) if locator_match else "",
         "exception": (
             f"{exception_match.group(1)}: {exception_match.group(2).strip()}"
@@ -341,6 +435,8 @@ def _build_ai_prompt(test_name: str, error_type: str, failure_text: str,
         context_lines.append(f"- 최초 프로젝트 스택: {context['top_frame']}")
     if context["last_project_frame"]:
         context_lines.append(f"- 마지막 프로젝트 스택: {context['last_project_frame']}")
+    if context["caller_frame"] and context["caller_frame"] != context["last_project_frame"]:
+        context_lines.append(f"- 실제 호출부: {context['caller_frame']}")
     if context["locator"]:
         context_lines.append(f"- 추출 locator: {context['locator']}")
 
@@ -353,16 +449,18 @@ def _build_ai_prompt(test_name: str, error_type: str, failure_text: str,
         f"테스트 이름: {test_name}\n"
         f"감지된 실패 오류 유형: {error_type or 'Unknown'}\n\n"
         "아래 3개 섹션만 정확한 순서와 제목으로 작성하세요.\n"
-        "1. 가능성 높은 원인\n"
-        "2. 수정 권장 사항\n"
-        "3. 재시도 적합성\n\n"
+        "1. 재시도 적합성\n"
+        "2. 가능성 높은 원인\n"
+        "3. 수정 권장 사항\n\n"
         "각 섹션은 명확하고 실용적으로 작성하세요.\n"
         "'수정 권장 사항'은 가장 가능성 높은 수정 방법 1개만 작성하세요.\n"
-        "스택에서 실제 실패 지점(가장 하위 프로젝트 파일)을 기준으로 판단하세요.\n"
         "파일 경로와 함수명을 직접 인용하고, 수정 방법을 실제 코드 스니펫으로 제시하세요.\n"
-        "예시 형태: `파일경로:함수명` 에서 `기존코드` 를 `수정코드` 로 변경하세요.\n"
-        "locator가 있으면 그 locator를 직접 코드 스니펫에 포함하세요.\n"
-        "'~확인하세요' '~추가하세요' 같은 지시만 쓰지 말고, 반드시 실제 코드 예시를 함께 작성하세요.\n"
+        "코드를 작성할 때는 반드시 기존코드와 수정코드를 아래 형식으로 작성하세요:\n"
+        "기존코드:\n```\n(기존 코드)\n```\n수정코드:\n```\n(수정된 코드)\n```\n"
+        "다음 수정은 절대 제안하지 마세요:\n"
+        "- timeout 값만 늘리는 수정\n"
+        "- AssertionError나 예외를 catch해서 logging.warning으로 대체하는 수정\n"
+        "- 공통 함수 내부에 특정 테스트용 값을 하드코딩하는 수정\n"
         "각 항목 사이에는 반드시 빈 줄을 하나 추가하세요.\n\n"
         f"추출 컨텍스트:\n{chr(10).join(context_lines) if context_lines else '- 없음'}\n\n"
         "실패 로그:\n"
@@ -457,10 +555,32 @@ def save_analysis_report(test_name: str, error_type: str,
     return str(path)
 
 
+def _inject_ai_extras(report, analysis: str, error_type: str) -> None:
+    try:
+        from pytest_html import extras as html_extras
+    except ImportError:
+        return
+    if not hasattr(report, "extras") or report.extras is None:
+        report.extras = []
+    escaped = analysis.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    report.extras.append(html_extras.html(
+        f'<details style="margin-top:6px">'
+        f'<summary style="cursor:pointer;font-weight:bold;color:#2c5fa0">'
+        f'🤖 AI Analysis'
+        f'<span style="background:#4a90e2;color:#fff;font-size:11px;'
+        f'padding:1px 6px;border-radius:10px;margin-left:6px">'
+        f'{error_type}</span></summary>'
+        f'<pre style="white-space:pre-wrap;font-size:12px;'
+        f'background:#eef4ff;padding:10px;border-left:4px solid #4a90e2;'
+        f'border-radius:3px;margin-top:4px">{escaped}</pre>'
+        f'</details>'
+    ))
+
+
 # ── 최종 실패 처리 ────────────────────────────────────────────────────────────
 
 def _on_final_failure(item, longrepr: str, error_type: str,
-                      classification_text: str = "") -> None:
+                      classification_text: str = "", call_report=None) -> None:
     frame_pattern    = _frame_pattern(item.config)
     final_error_type = error_type or _final_error_type(longrepr, classification_text)
 
@@ -470,6 +590,15 @@ def _on_final_failure(item, longrepr: str, error_type: str,
         failure_text=longrepr,
         frame_pattern=frame_pattern,
     )
+    if analysis:
+        logging.info(f"[AI analysis] {item.nodeid} → HTML 리포트에 주입")
+
+    item._ai_analysis_text    = analysis or ""
+    item._ai_error_type_label = final_error_type or "Unknown"
+
+    if analysis and call_report is not None:
+        _inject_ai_extras(call_report, analysis, final_error_type)
+
     report_path = ""
     if analysis:
         report_path = save_analysis_report(
@@ -478,7 +607,6 @@ def _on_final_failure(item, longrepr: str, error_type: str,
             failure_text=longrepr,
             analysis=analysis,
         )
-        logging.error(f"[AI analysis] {item.nodeid} -> {report_path}")
 
     _notify_slack_final_failure(item.nodeid, final_error_type, longrepr, analysis, report_path)
     _notify_teams_final_failure(item.nodeid, final_error_type, longrepr, analysis, report_path)
@@ -506,17 +634,20 @@ def pytest_runtest_protocol(item, nextitem):
         should_retry    = bool(error_type) and not is_last_attempt
 
         if not should_retry:
-            for report in reports:
-                item.ihook.pytest_runtest_logreport(report=report)
-            if succeeded and attempt > 0:
-                logging.info(f"[retry success] {item.nodeid} ({attempt + 1}th attempt)")
-            elif not succeeded:
+            if not succeeded:
                 _on_final_failure(
                     item,
                     str(active_report.longrepr or ""),
                     error_type,
                     _classification_text(active_report),
+                    call_report=active_report,
                 )
+
+            for report in reports:
+                item.ihook.pytest_runtest_logreport(report=report)
+
+            if succeeded and attempt > 0:
+                logging.info(f"[retry success] {item.nodeid} ({attempt + 1}th attempt)")
             return True
 
         logging.warning(

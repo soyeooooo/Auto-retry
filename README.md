@@ -1,4 +1,4 @@
-# pytest-auto-retry
+# pytest-smart-retry
 
 Pytest plugin for automatic test retry with AI log analysis and Slack/Teams notifications.
 
@@ -16,20 +16,20 @@ Pytest plugin for automatic test retry with AI log analysis and Slack/Teams noti
 
 ```bash
 # GitHub에서 직접 설치
-pip install git+https://github.com/soyeooooo/pytest-auto-retry.git
+pip install git+https://github.com/soyeooooo/pytest-smart-retry.git
 
 # AI 분석 기능 포함
-pip install "git+https://github.com/soyeooooo/pytest-auto-retry.git#egg=pytest-auto-retry[ai]"
+pip install "git+https://github.com/soyeooooo/pytest-smart-retry.git#egg=pytest-smart-retry[ai]"
 
 # Slack 알림 기능 포함
-pip install "git+https://github.com/soyeooooo/pytest-auto-retry.git#egg=pytest-auto-retry[slack]"
+pip install "git+https://github.com/soyeooooo/pytest-smart-retry.git#egg=pytest-smart-retry[slack]"
 ```
 
 로컬 클론 후 설치:
 
 ```bash
-git clone https://github.com/soyeooooo/pytest-auto-retry.git
-cd pytest-auto-retry
+git clone https://github.com/soyeooooo/pytest-smart-retry.git
+cd pytest-smart-retry
 
 pip install .          # 일반 설치
 pip install -e .       # 개발 모드 (코드 수정이 즉시 반영)
@@ -113,10 +113,10 @@ pytest --auto-retry-max=3
 ## Project Structure
 
 ```
-pytest-auto-retry/
+pytest-smart-retry/
 ├── pyproject.toml
 ├── README.md
-└── pytest_auto_retry/
+└── pytest_smart_retry/
     ├── __init__.py
     └── plugin.py
 ```
