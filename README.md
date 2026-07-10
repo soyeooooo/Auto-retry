@@ -69,6 +69,14 @@ CLI 옵션:
 pytest --auto-retry-max=3
 ```
 
+ini 옵션이 설정되지 않은 경우, 아래 환경변수가 fallback으로 사용됩니다:
+
+| 변수 | 기본값 | 대응 ini 옵션 |
+|------|--------|------|
+| `AUTO_RETRY_MAX` | `2` | `auto_retry_max` |
+| `AUTO_RETRY_DRIVER_FIXTURE` | `set_driver` | `auto_retry_driver_fixture` |
+| `AUTO_RETRY_FRAME_PATTERN` | `` | `auto_retry_frame_pattern` |
+
 ### Environment Variables
 
 #### AI 분석
@@ -127,7 +135,7 @@ pytest-smart-retry/
 - pytest >= 7
 
 Optional:
-- `openai` — OpenAI 기반 AI 분석
+- `openai` — (예비용, 현재는 OpenAI 호출도 표준 라이브러리 urllib로 직접 구현되어 있어 미사용. 추후 공식 SDK로 전환할 경우를 대비해 남겨둠)
 - `requests` — (예비용, 현재는 표준 라이브러리 urllib 사용)
 
 ## License

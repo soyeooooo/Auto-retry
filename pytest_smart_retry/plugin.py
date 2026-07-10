@@ -13,7 +13,6 @@ AI 로그 분석과 Slack/Teams 알림을 선택적으로 지원하는 pytest �
 - 최종 실패 시 AI 분석 요약과 Slack/Teams 알림을 선택적으로 보낼 수 있습니다.
 
 환경 변수:
-- AI_LOG_ANALYZER_ENABLED=true
 - AI_LOG_ANALYZER_PROVIDER=ollama | openai
 - OLLAMA_MODEL=llama3
 - OLLAMA_ENDPOINT=http://localhost:11434/api/generate
