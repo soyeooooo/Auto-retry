@@ -28,6 +28,10 @@ pytest.ini 옵션:
 - auto_retry_driver_fixture = set_driver  (드라이버 fixture 이름, 기본값 set_driver)
 - auto_retry_frame_pattern = ...          (스택 필터 정규식, 기본값 없음)
 - auto_retry_utility_files = a.py,b.py    (AI 분석 시 호출부에서 제외할 공통 유틸 파일명, 콤마 구분, 기본값 없음)
+
+NAS 백업 (선택):
+- NAS_REPORT_ROOT=\\\\nas\\reports        (스크린샷을 복사할 경로. 설정 시에만 동작)
+- NAS_REPORT_ENABLED=true
 """
 
 import json
@@ -386,18 +390,25 @@ def _build_analysis_blocks(analysis: str, limit: int = 1200) -> list:
     return blocks
 
 
-def _notify_teams_final_failure(test_name, error_type, failure_text, analysis="", report_path=""):
+def _notify_teams_final_failure(test_name, error_type, failure_text, analysis="",
+                                screenshot_path=""):
     if not _teams_notify_enabled():
         return
+
+    facts = [
+        {"title": "Test", "value": test_name},
+        {"title": "Error Type", "value": error_type or "Unknown"},
+        {"title": "Time", "value": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+    ]
+    if screenshot_path:
+        # Adaptive Card는 value를 마크다운으로 렌더링해서 "\\"(UNC 접두사)가
+        # 이스케이프로 먹혀 "\" 하나로 뭉개짐 → 백슬래시를 두 배로 escape해서 방지
+        facts.append({"title": "Screenshot", "value": screenshot_path.replace("\\", "\\\\")})
 
     body = [
         {"type": "TextBlock", "text": "🚨 auto_retry Final Failure",
          "size": "Large", "weight": "Bolder", "color": "Attention"},
-        {"type": "FactSet", "facts": [
-            {"title": "Test", "value": test_name},
-            {"title": "Error Type", "value": error_type or "Unknown"},
-            {"title": "Time", "value": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
-        ]},
+        {"type": "FactSet", "facts": facts},
     ]
     if analysis:
         body.append({"type": "TextBlock", "text": "─" * 30, "color": "Default"})
@@ -429,6 +440,35 @@ def _notify_teams_final_failure(test_name, error_type, failure_text, analysis=""
             resp.read()
     except Exception as exc:
         logging.error(f"[teams notify failed] {test_name}: {exc}")
+
+
+# ── NAS 백업 ─────────────────────────────────────────────────────────────────
+
+def _nas_report_root() -> str:
+    return os.getenv("NAS_REPORT_ROOT", "").strip()
+
+def _nas_copy_enabled() -> bool:
+    raw = os.getenv("NAS_REPORT_ENABLED", "").strip().lower()
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return bool(_nas_report_root())
+
+def _copy_screenshot_to_nas(screenshot_path: str) -> str:
+    if not screenshot_path or not os.path.exists(screenshot_path):
+        return ""
+    nas_root = _nas_report_root()
+    if not nas_root:
+        return ""
+    try:
+        import shutil
+        dated_dir = Path(nas_root) / datetime.now().strftime("%Y%m%d")
+        dated_dir.mkdir(parents=True, exist_ok=True)
+        dest = dated_dir / Path(screenshot_path).name
+        shutil.copy2(screenshot_path, dest)
+        return str(dest)
+    except Exception as exc:
+        logging.warning(f"[nas copy failed] {screenshot_path}: {exc}")
+        return ""
 
 
 # ── AI 분석 ──────────────────────────────────────────────────────────────────
@@ -716,8 +756,15 @@ def _on_final_failure(item, longrepr: str, error_type: str,
             analysis=analysis,
         )
 
+    screenshot_path = ""
+    screenshot_paths = getattr(call_report, "screenshot_paths", None) or []
+    if screenshot_paths and _nas_copy_enabled():
+        screenshot_path = _copy_screenshot_to_nas(screenshot_paths[-1])
+        if screenshot_path:
+            logging.info(f"[nas report] {item.nodeid} → {screenshot_path}")
+
     _notify_slack_final_failure(item.nodeid, final_error_type, longrepr, analysis, report_path)
-    _notify_teams_final_failure(item.nodeid, final_error_type, longrepr, analysis, report_path)
+    _notify_teams_final_failure(item.nodeid, final_error_type, longrepr, analysis, screenshot_path)
 
 
 # ── pytest hook ──────────────────────────────────────────────────────────────

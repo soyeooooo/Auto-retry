@@ -10,6 +10,7 @@ Pytest plugin for automatic test retry with AI log analysis and Slack/Teams noti
 - Selenium 드라이버 자동 리셋 (`about:blank` 이동)
 - 최종 실패 시 AI 로그 분석 (Ollama / OpenAI 지원), 실패 호출부 소스코드 자동 첨부, 오류 유형별 분석 가이드 힌트
 - Slack / Microsoft Teams 웹훅 알림
+- 실패 스크린샷 NAS 백업 (선택)
 - `conftest.py` 없이 자동 등록 (pytest11 entry point)
 
 ## Installation
@@ -107,6 +108,15 @@ ini 옵션이 설정되지 않은 경우, 아래 환경변수가 fallback으로 
 |------|--------|------|
 | `TEAMS_WEBHOOK_URL` | | Power Automate Webhook URL |
 | `TEAMS_NOTIFY_ON_FINAL_FAILURE` | `true` (URL 설정 시) | 최종 실패 알림 활성화 |
+
+#### NAS 백업
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `NAS_REPORT_ROOT` | | 스크린샷을 복사할 NAS 경로 (예: `\\nas\reports`). 설정 시에만 동작 |
+| `NAS_REPORT_ENABLED` | `true` (경로 설정 시) | NAS 백업 활성화 |
+
+설정 시 최종 실패 스크린샷을 `NAS_REPORT_ROOT/YYYYMMDD/` 아래로 복사하고, Teams 알림의 Screenshot 필드에 경로를 첨부합니다.
 
 ## How It Works
 
