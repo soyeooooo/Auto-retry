@@ -134,6 +134,17 @@ def _utility_files(config=None) -> tuple:
     return tuple(name.strip() for name in raw.split(",") if name.strip())
 
 
+def _project_root(config=None) -> Path:
+    if config is not None:
+        rootpath = getattr(config, "rootpath", None)
+        if rootpath:
+            return Path(rootpath)
+        rootdir = getattr(config, "rootdir", None)
+        if rootdir:
+            return Path(str(rootdir))
+    return Path.cwd()
+
+
 # ── 오류 분류 ────────────────────────────────────────────────────────────────
 
 def _error_type(longrepr: str) -> str:
@@ -448,8 +459,45 @@ def _extract_failure_context(failure_text: str, frame_pattern: str = "",
     }
 
 
+def _extract_caller_source(caller_frame: str, root_dir: Path, max_lines: int = 50) -> str:
+    m = re.match(r"([\w/\\]+\.py):(\d+): in (\w+)", caller_frame)
+    if not m:
+        return ""
+    rel_path, lineno, func_name = m.group(1), int(m.group(2)), m.group(3)
+    abs_path = root_dir / rel_path
+    if not abs_path.exists():
+        return ""
+    try:
+        lines = abs_path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return ""
+    func_start = None
+    for i in range(min(lineno - 1, len(lines) - 1), -1, -1):
+        if re.match(rf"\s*def {re.escape(func_name)}\s*\(", lines[i]):
+            func_start = i
+            break
+    if func_start is None:
+        start = max(0, lineno - 10)
+        return "\n".join(lines[start: min(len(lines), lineno + 10)])
+    indent = len(lines[func_start]) - len(lines[func_start].lstrip())
+    func_end = func_start + 1
+    for i in range(func_start + 1, len(lines)):
+        stripped = lines[i].strip()
+        if not stripped:
+            func_end = i
+            continue
+        if len(lines[i]) - len(lines[i].lstrip()) <= indent and stripped:
+            break
+        func_end = i
+    snippet = lines[func_start: func_end + 1]
+    if len(snippet) > max_lines:
+        snippet = snippet[:max_lines] + [f"    # ... ({len(snippet) - max_lines}줄 생략)"]
+    return "\n".join(snippet)
+
+
 def _build_ai_prompt(test_name: str, error_type: str, failure_text: str,
-                     frame_pattern: str = "", utility_files: tuple = ()) -> str:
+                     frame_pattern: str = "", utility_files: tuple = (),
+                     root_dir: Path = None) -> str:
     context      = _extract_failure_context(failure_text, frame_pattern, utility_files)
     context_lines = []
     if context["exception"]:
@@ -460,6 +508,10 @@ def _build_ai_prompt(test_name: str, error_type: str, failure_text: str,
         context_lines.append(f"- 마지막 프로젝트 스택: {context['last_project_frame']}")
     if context["caller_frame"] and context["caller_frame"] != context["last_project_frame"]:
         context_lines.append(f"- 실제 호출부 (공통 유틸 제외): {context['caller_frame']}")
+        if root_dir is not None:
+            source = _extract_caller_source(context["caller_frame"], root_dir)
+            if source:
+                context_lines.append(f"- 호출부 소스코드:\n```python\n{source}\n```")
     if context["locator"]:
         context_lines.append(f"- 추출 locator: {context['locator']}")
 
@@ -549,12 +601,13 @@ def _call_openai(prompt: str) -> str:
 
 
 def analyze_test_failure(test_name: str, error_type: str, failure_text: str,
-                         frame_pattern: str = "", utility_files: tuple = ()) -> str:
+                         frame_pattern: str = "", utility_files: tuple = (),
+                         root_dir: Path = None) -> str:
     trimmed = (failure_text or "").strip()
     if not trimmed:
         return ""
     trimmed = trimmed[-_ai_max_chars():]
-    prompt  = _build_ai_prompt(test_name, error_type, trimmed, frame_pattern, utility_files)
+    prompt  = _build_ai_prompt(test_name, error_type, trimmed, frame_pattern, utility_files, root_dir)
     try:
         if _ai_provider() == "openai":
             return _call_openai(prompt)
@@ -614,6 +667,7 @@ def _on_final_failure(item, longrepr: str, error_type: str,
                       classification_text: str = "", call_report=None) -> None:
     frame_pattern    = _frame_pattern(item.config)
     utility_files    = _utility_files(item.config)
+    root_dir         = _project_root(item.config)
     final_error_type = error_type or _final_error_type(longrepr, classification_text)
 
     analysis = analyze_test_failure(
@@ -622,6 +676,7 @@ def _on_final_failure(item, longrepr: str, error_type: str,
         failure_text=longrepr,
         frame_pattern=frame_pattern,
         utility_files=utility_files,
+        root_dir=root_dir,
     )
     if analysis:
         logging.info(f"[AI analysis] {item.nodeid} → HTML 리포트에 주입")

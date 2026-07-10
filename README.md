@@ -8,7 +8,7 @@ Pytest plugin for automatic test retry with AI log analysis and Slack/Teams noti
 
 - Timeout/Network 실패만 선택적으로 재시도 (Assertion 실패는 즉시 종료)
 - Selenium 드라이버 자동 리셋 (`about:blank` 이동)
-- 최종 실패 시 AI 로그 분석 (Ollama / OpenAI 지원)
+- 최종 실패 시 AI 로그 분석 (Ollama / OpenAI 지원), 실패 호출부 소스코드 자동 첨부
 - Slack / Microsoft Teams 웹훅 알림
 - `conftest.py` 없이 자동 등록 (pytest11 entry point)
 
