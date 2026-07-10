@@ -62,6 +62,7 @@ auto_retry_driver_fixture = my_driver
 | `auto_retry_max` | `2` | 재시도 횟수 |
 | `auto_retry_driver_fixture` | `set_driver` | Selenium 드라이버 fixture 이름 |
 | `auto_retry_frame_pattern` | `` | 스택 필터 정규식 |
+| `auto_retry_utility_files` | `` | AI 분석 시 호출부에서 제외할 공통 유틸 파일명 (콤마 구분) |
 
 CLI 옵션:
 
@@ -76,6 +77,7 @@ ini 옵션이 설정되지 않은 경우, 아래 환경변수가 fallback으로 
 | `AUTO_RETRY_MAX` | `2` | `auto_retry_max` |
 | `AUTO_RETRY_DRIVER_FIXTURE` | `set_driver` | `auto_retry_driver_fixture` |
 | `AUTO_RETRY_FRAME_PATTERN` | `` | `auto_retry_frame_pattern` |
+| `AUTO_RETRY_UTILITY_FILES` | `` | `auto_retry_utility_files` |
 
 ### Environment Variables
 

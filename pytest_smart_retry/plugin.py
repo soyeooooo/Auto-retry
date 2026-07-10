@@ -27,6 +27,7 @@ pytest.ini 옵션:
 - auto_retry_max = 2                      (재시도 횟수, 기본값 2)
 - auto_retry_driver_fixture = set_driver  (드라이버 fixture 이름, 기본값 set_driver)
 - auto_retry_frame_pattern = ...          (스택 필터 정규식, 기본값 없음)
+- auto_retry_utility_files = a.py,b.py    (AI 분석 시 호출부에서 제외할 공통 유틸 파일명, 콤마 구분, 기본값 없음)
 """
 
 import json
@@ -89,6 +90,10 @@ def pytest_configure(config):
     config.addinivalue_line("ini_options", "auto_retry_max (int): 재시도 횟수 (기본값 2)")
     config.addinivalue_line("ini_options", "auto_retry_driver_fixture (str): 드라이버 fixture 이름")
     config.addinivalue_line("ini_options", "auto_retry_frame_pattern (str): 스택 필터 정규식")
+    config.addinivalue_line(
+        "ini_options",
+        "auto_retry_utility_files (str): AI 분석 시 호출부에서 제외할 공통 유틸 파일명 (콤마 구분)",
+    )
 
 
 def _retry_max(config=None) -> int:
@@ -116,6 +121,17 @@ def _frame_pattern(config=None) -> str:
         if ini:
             return str(ini)
     return os.getenv("AUTO_RETRY_FRAME_PATTERN", "")
+
+
+def _utility_files(config=None) -> tuple:
+    raw = ""
+    if config:
+        ini = config.getini("auto_retry_utility_files") if "auto_retry_utility_files" in config._inicache else None
+        if ini:
+            raw = str(ini)
+    if not raw:
+        raw = os.getenv("AUTO_RETRY_UTILITY_FILES", "")
+    return tuple(name.strip() for name in raw.split(",") if name.strip())
 
 
 # ── 오류 분류 ────────────────────────────────────────────────────────────────
@@ -406,16 +422,24 @@ def _notify_teams_final_failure(test_name, error_type, failure_text, analysis=""
 
 # ── AI 분석 ──────────────────────────────────────────────────────────────────
 
-def _extract_failure_context(failure_text: str, frame_pattern: str = "") -> dict:
+def _extract_failure_context(failure_text: str, frame_pattern: str = "",
+                             utility_files: tuple = ()) -> dict:
     text   = failure_text or ""
     frames = re.findall(frame_pattern, text) if frame_pattern else []
     locator_match   = re.search(r"locator=(\([^\n]+\))", text)
     exception_match = re.search(r"([A-Za-z_][A-Za-z0-9_]*Exception): Message: ([^\n]+)", text)
+
+    caller_frame = ""
+    for frame in reversed(frames):
+        if not any(util in frame for util in utility_files):
+            caller_frame = frame
+            break
+
     return {
         "frames": frames[:8],
         "top_frame": frames[0] if frames else "",
         "last_project_frame": frames[-1] if frames else "",
-        "caller_frame": frames[-1] if frames else "",
+        "caller_frame": caller_frame,
         "locator": locator_match.group(1) if locator_match else "",
         "exception": (
             f"{exception_match.group(1)}: {exception_match.group(2).strip()}"
@@ -425,8 +449,8 @@ def _extract_failure_context(failure_text: str, frame_pattern: str = "") -> dict
 
 
 def _build_ai_prompt(test_name: str, error_type: str, failure_text: str,
-                     frame_pattern: str = "") -> str:
-    context      = _extract_failure_context(failure_text, frame_pattern)
+                     frame_pattern: str = "", utility_files: tuple = ()) -> str:
+    context      = _extract_failure_context(failure_text, frame_pattern, utility_files)
     context_lines = []
     if context["exception"]:
         context_lines.append(f"- 추출 예외: {context['exception']}")
@@ -435,9 +459,16 @@ def _build_ai_prompt(test_name: str, error_type: str, failure_text: str,
     if context["last_project_frame"]:
         context_lines.append(f"- 마지막 프로젝트 스택: {context['last_project_frame']}")
     if context["caller_frame"] and context["caller_frame"] != context["last_project_frame"]:
-        context_lines.append(f"- 실제 호출부: {context['caller_frame']}")
+        context_lines.append(f"- 실제 호출부 (공통 유틸 제외): {context['caller_frame']}")
     if context["locator"]:
         context_lines.append(f"- 추출 locator: {context['locator']}")
+
+    utility_instruction = ""
+    if utility_files:
+        utility_instruction = (
+            f"{', '.join(utility_files)} 등 공통 유틸 함수는 수정 대상이 아닙니다. "
+            "스택에서 공통 유틸을 호출한 상위 파일에서 수정 포인트를 찾으세요.\n"
+        )
 
     return (
         "You are a QA automation log analyzer.\n"
@@ -453,6 +484,7 @@ def _build_ai_prompt(test_name: str, error_type: str, failure_text: str,
         "3. 수정 권장 사항\n\n"
         "각 섹션은 명확하고 실용적으로 작성하세요.\n"
         "'수정 권장 사항'은 가장 가능성 높은 수정 방법 1개만 작성하세요.\n"
+        f"{utility_instruction}"
         "파일 경로와 함수명을 직접 인용하고, 수정 방법을 실제 코드 스니펫으로 제시하세요.\n"
         "코드를 작성할 때는 반드시 기존코드와 수정코드를 아래 형식으로 작성하세요:\n"
         "기존코드:\n```\n(기존 코드)\n```\n수정코드:\n```\n(수정된 코드)\n```\n"
@@ -517,12 +549,12 @@ def _call_openai(prompt: str) -> str:
 
 
 def analyze_test_failure(test_name: str, error_type: str, failure_text: str,
-                         frame_pattern: str = "") -> str:
+                         frame_pattern: str = "", utility_files: tuple = ()) -> str:
     trimmed = (failure_text or "").strip()
     if not trimmed:
         return ""
     trimmed = trimmed[-_ai_max_chars():]
-    prompt  = _build_ai_prompt(test_name, error_type, trimmed, frame_pattern)
+    prompt  = _build_ai_prompt(test_name, error_type, trimmed, frame_pattern, utility_files)
     try:
         if _ai_provider() == "openai":
             return _call_openai(prompt)
@@ -581,6 +613,7 @@ def _inject_ai_extras(report, analysis: str, error_type: str) -> None:
 def _on_final_failure(item, longrepr: str, error_type: str,
                       classification_text: str = "", call_report=None) -> None:
     frame_pattern    = _frame_pattern(item.config)
+    utility_files    = _utility_files(item.config)
     final_error_type = error_type or _final_error_type(longrepr, classification_text)
 
     analysis = analyze_test_failure(
@@ -588,6 +621,7 @@ def _on_final_failure(item, longrepr: str, error_type: str,
         error_type=final_error_type,
         failure_text=longrepr,
         frame_pattern=frame_pattern,
+        utility_files=utility_files,
     )
     if analysis:
         logging.info(f"[AI analysis] {item.nodeid} → HTML 리포트에 주입")
