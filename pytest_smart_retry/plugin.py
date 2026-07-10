@@ -495,6 +495,23 @@ def _extract_caller_source(caller_frame: str, root_dir: Path, max_lines: int = 5
     return "\n".join(snippet)
 
 
+def _build_code_aware_guidance(failure_text: str, context: dict) -> str:
+    hints = []
+    lowered = (failure_text or "").lower()
+    if "invalidsessionidexception" in lowered or "invalid session id" in lowered:
+        hints.append(
+            "- 드라이버 세션이 중간에 종료되었을 가능성을 점검하고, "
+            "locator 문제와 세션 종료 문제를 구분해서 제안하세요."
+        )
+    if context.get("locator"):
+        hints.append(f"- 가능하면 `{context['locator']}` 를 사용하는 호출부를 함께 언급하세요.")
+    if context.get("caller_frame"):
+        hints.append(f"- 수정 권장사항은 공통 유틸이 아닌 실제 호출부 `{context['caller_frame']}` 기준으로 작성하세요.")
+    elif context.get("last_project_frame"):
+        hints.append(f"- 최소 1개 이상 권장사항은 `{context['last_project_frame']}` 기준으로 구체적으로 작성하세요.")
+    return "\n".join(hints)
+
+
 def _build_ai_prompt(test_name: str, error_type: str, failure_text: str,
                      frame_pattern: str = "", utility_files: tuple = (),
                      root_dir: Path = None) -> str:
@@ -514,6 +531,8 @@ def _build_ai_prompt(test_name: str, error_type: str, failure_text: str,
                 context_lines.append(f"- 호출부 소스코드:\n```python\n{source}\n```")
     if context["locator"]:
         context_lines.append(f"- 추출 locator: {context['locator']}")
+
+    guidance = _build_code_aware_guidance(failure_text, context)
 
     utility_instruction = ""
     if utility_files:
@@ -546,6 +565,7 @@ def _build_ai_prompt(test_name: str, error_type: str, failure_text: str,
         "- 공통 함수 내부에 특정 테스트용 값을 하드코딩하는 수정\n"
         "각 항목 사이에는 반드시 빈 줄을 하나 추가하세요.\n\n"
         f"추출 컨텍스트:\n{chr(10).join(context_lines) if context_lines else '- 없음'}\n\n"
+        f"추가 작성 가이드:\n{guidance or '- 없음'}\n\n"
         "실패 로그:\n"
         f"{failure_text}"
     )
