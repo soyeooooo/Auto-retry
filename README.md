@@ -1,8 +1,8 @@
 # pytest-smart-retry
 
-Pytest plugin for automatic test retry with AI log analysis and Slack/Teams notifications.
+Pytest plugin for automatic test retry with AI log analysis, Jira issue tracking, and Slack/Teams notifications.
 
-`@pytest.mark.auto_retry` 마커가 붙은 테스트에서 Timeout/Network 계열 실패를 자동으로 재시도하고, 최종 실패 시 AI 분석 리포트를 생성하고 Slack/Teams로 알림을 보냅니다.
+`@pytest.mark.auto_retry` 마커가 붙은 테스트에서 Timeout/Network 계열 실패를 자동으로 재시도하고, 최종 실패 시 AI 분석 리포트를 생성하고 Jira 이슈를 등록한 뒤 Slack/Teams로 알림을 보냅니다.
 
 ## Features
 
@@ -10,6 +10,7 @@ Pytest plugin for automatic test retry with AI log analysis and Slack/Teams noti
 - Selenium 드라이버 자동 리셋 (`about:blank` 이동)
 - 최종 실패 시 AI 로그 분석 (Ollama / OpenAI 지원), 실패 호출부 소스코드 자동 첨부, 오류 유형별 분석 가이드 힌트
 - Slack / Microsoft Teams 웹훅 알림
+- 최종 실패 시 Jira 이슈 자동 생성 (QA Kanban 보드, 동일 테스트 재발 시 코멘트로 누적)
 - 실패 스크린샷 NAS 백업 (선택)
 - `conftest.py` 없이 자동 등록 (pytest11 entry point)
 
@@ -109,6 +110,31 @@ ini 옵션이 설정되지 않은 경우, 아래 환경변수가 fallback으로 
 | `TEAMS_WEBHOOK_URL` | | Power Automate Webhook URL |
 | `TEAMS_NOTIFY_ON_FINAL_FAILURE` | `true` (URL 설정 시) | 최종 실패 알림 활성화 |
 
+#### Jira
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `JIRA_BASE_URL` | | Jira Cloud URL (예: `https://your-domain.atlassian.net`) |
+| `JIRA_EMAIL` | | 계정 이메일 (API 토큰 발급 계정) |
+| `JIRA_API_TOKEN` | | 개인 API 토큰 ([발급 링크](https://id.atlassian.com/manage-profile/security/api-tokens)) |
+| `JIRA_PROJECT_KEY` | `QAT` | 이슈를 생성할 프로젝트 키 |
+| `JIRA_ISSUE_TYPE` | `Bug` | 이슈 타입 |
+| `JIRA_NOTIFY_ON_FINAL_FAILURE` | `true` (인증 정보 설정 시) | 최종 실패 시 Jira 이슈 생성 활성화 |
+| `JIRA_EXTRA_FIELDS` | | 프로젝트별 필수 커스텀 필드를 넘기는 JSON 객체 (예: `{"customfield_10771":["automation"]}`) |
+| `AUTO_RETRY_ENV_NAME` | | CI/실행 환경 이름 (예: `QuickBuild`). **설정하지 않으면 로컬 실행으로 간주해 Jira 이슈를 생성하지 않습니다** — CI 파이프라인에서만 설정하세요. |
+
+동일 테스트(nodeid 기반 라벨)로 열려 있는 이슈가 있으면 코멘트만 추가하고, 없으면 새 이슈를 생성합니다. 생성/코멘트된 이슈 링크는 Slack/Teams 알림에도 함께 첨부됩니다.
+
+이슈 제목은 고정 포맷입니다: `[smartRetry][{AUTO_RETRY_ENV_NAME}] {실패 메시지 첫 줄}`
+(예: `[smartRetry][QuickBuild] AssertionError: 로그인 버튼이 비활성화 상태입니다`)
+테스트 이름/스택 등 상세 내용은 이슈 본문(description)에 포함됩니다.
+
+프로젝트에 필수(required) 커스텀 필드가 있으면 이슈 생성이 `HTTP 400`으로 거부됩니다. 어떤 필드가 필수인지는 아래로 확인할 수 있습니다:
+```
+GET /rest/api/3/issue/createmeta?projectKeys=<프로젝트키>&issuetypeIds=<이슈타입ID>&expand=projects.issuetypes.fields
+```
+`required: true`이면서 `hasDefaultValue: false`인 필드를 `JIRA_EXTRA_FIELDS`에 채워주면 됩니다.
+
 #### NAS 백업
 
 | 변수 | 기본값 | 설명 |
@@ -126,7 +152,8 @@ ini 옵션이 설정되지 않은 경우, 아래 환경변수가 fallback으로 
    - **Assertion/기타** → 즉시 최종 실패 처리
 3. 최종 실패 시:
    - AI 분석 리포트 생성 (`Report/ai_analysis/ai_analysis.txt`)
-   - Slack/Teams 웹훅 알림 발송
+   - Jira 이슈 생성 또는 기존 이슈에 코멘트 추가 (QA Kanban 보드)
+   - Slack/Teams 웹훅 알림 발송 (Jira 이슈 링크 포함)
 4. 세션 시작 시 `Report/ai_analysis` 디렉토리를 미리 생성 (CI 파일 전송 단계 오류 방지)
 5. 전체 pass 시 리포트 파일에 `전부 pass입니다 :)!` 메시지 기록
 

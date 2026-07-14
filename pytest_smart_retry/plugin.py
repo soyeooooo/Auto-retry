@@ -29,11 +29,26 @@ pytest.ini 옵션:
 - auto_retry_frame_pattern = ...          (스택 필터 정규식, 기본값 없음)
 - auto_retry_utility_files = a.py,b.py    (AI 분석 시 호출부에서 제외할 공통 유틸 파일명, 콤마 구분, 기본값 없음)
 
+Jira 이슈 등록 (선택):
+- JIRA_BASE_URL=https://meditcompany.atlassian.net
+- JIRA_EMAIL=me@meditcompany.com
+- JIRA_API_TOKEN=...                      (https://id.atlassian.com/manage-profile/security/api-tokens 에서 발급)
+- JIRA_PROJECT_KEY=QAT                    (기본값 QAT)
+- JIRA_ISSUE_TYPE=Bug                     (기본값 Bug)
+- JIRA_NOTIFY_ON_FINAL_FAILURE=true
+- JIRA_EXTRA_FIELDS={"customfield_10771":["automation"]}  (프로젝트별 필수 커스텀 필드, JSON)
+- AUTO_RETRY_ENV_NAME=QuickBuild           (CI/실행 환경 이름. 설정 안 하면 로컬 실행으로 간주해
+                                            Jira 이슈를 만들지 않음 — CI에서만 반드시 설정)
+  최종 실패 시 QA Kanban 보드에 이슈를 생성합니다. 동일 테스트의 열린 이슈가 있으면
+  코멘트만 추가하고, 없으면 신규 생성합니다.
+  이슈 제목 형식: [smartRetry][{AUTO_RETRY_ENV_NAME}] {실패 메시지 첫 줄}
+
 NAS 백업 (선택):
 - NAS_REPORT_ROOT=\\\\nas\\reports        (스크린샷을 복사할 경로. 설정 시에만 동작)
 - NAS_REPORT_ENABLED=true
 """
 
+import base64
 import json
 import logging
 import os
@@ -235,7 +250,7 @@ def _slack_notify_enabled() -> bool:
         return False
     return bool(_slack_webhook_url())
 
-def _slack_excerpt(text: str, limit: int = 800) -> str:
+def _excerpt(text: str, limit: int = 800) -> str:
     lines   = [" ".join(line.split()) for line in (text or "").splitlines()]
     cleaned = re.sub(r'\n{3,}', '\n\n', "\n".join(lines)).strip()
     if len(cleaned) <= limit:
@@ -257,7 +272,7 @@ def _post_to_slack(message: str) -> None:
     except error.URLError as exc:
         raise RuntimeError(f"Connection error: {exc.reason}") from exc
 
-def _notify_slack_final_failure(test_name, error_type, failure_text, analysis="", report_path=""):
+def _notify_slack_final_failure(test_name, error_type, failure_text, analysis="", report_path="", jira_url=""):
     if not _slack_notify_enabled():
         return
     lines = [
@@ -267,9 +282,11 @@ def _notify_slack_final_failure(test_name, error_type, failure_text, analysis=""
     ]
     if report_path:
         lines.append(f"- Report: `{report_path}`")
+    if jira_url:
+        lines.append(f"- Jira: {jira_url}")
     if analysis:
-        lines.append(f"- AI Summary: {_slack_excerpt(analysis)}")
-    lines.append(f"- Failure Excerpt: `{_slack_excerpt(failure_text)}`")
+        lines.append(f"- AI Summary: {_excerpt(analysis)}")
+    lines.append(f"- Failure Excerpt: `{_excerpt(failure_text)}`")
     try:
         _post_to_slack("\n".join(lines))
     except Exception as exc:
@@ -317,7 +334,7 @@ def _code_block(code: str) -> dict:
 
 
 def _build_analysis_blocks(analysis: str, limit: int = 1200) -> list:
-    text = _slack_excerpt(analysis, limit=limit)
+    text = _excerpt(analysis, limit=limit)
     text = re.sub(r'[Ѐ-ӿ]+', '', text)
     text = re.sub(r'Tests?/[^\s:]+(?:::[^\s:]+)?:?\s*', '', text)
     text = re.sub(r'^\s*\d+:\s*(Failed|Error)[^\n]*', '', text, flags=re.MULTILINE)
@@ -389,7 +406,7 @@ def _build_analysis_blocks(analysis: str, limit: int = 1200) -> list:
 
 
 def _notify_teams_final_failure(test_name, error_type, failure_text, analysis="",
-                                screenshot_path=""):
+                                screenshot_path="", jira_key="", jira_url=""):
     if not _teams_notify_enabled():
         return
 
@@ -398,6 +415,8 @@ def _notify_teams_final_failure(test_name, error_type, failure_text, analysis=""
         {"title": "Error Type", "value": error_type or "Unknown"},
         {"title": "Time", "value": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
     ]
+    if jira_key:
+        facts.append({"title": "Jira Issue", "value": f"[{jira_key}]({jira_url})" if jira_url else jira_key})
     if screenshot_path:
         # Adaptive Card는 value를 마크다운으로 렌더링해서 "\\"(UNC 접두사)가
         # 이스케이프로 먹혀 "\" 하나로 뭉개짐 → 백슬래시를 두 배로 escape해서 방지
@@ -438,6 +457,192 @@ def _notify_teams_final_failure(test_name, error_type, failure_text, analysis=""
             resp.read()
     except Exception as exc:
         logging.error(f"[teams notify failed] {test_name}: {exc}")
+
+
+# ── Jira ─────────────────────────────────────────────────────────────────────
+
+def _jira_base_url() -> str:
+    return os.getenv("JIRA_BASE_URL", "").strip().rstrip("/")
+
+def _jira_email() -> str:
+    return os.getenv("JIRA_EMAIL", "").strip()
+
+def _jira_api_token() -> str:
+    return os.getenv("JIRA_API_TOKEN", "").strip()
+
+def _jira_project_key() -> str:
+    return os.getenv("JIRA_PROJECT_KEY", "QAT").strip()
+
+def _jira_issue_type() -> str:
+    return os.getenv("JIRA_ISSUE_TYPE", "Bug").strip()
+
+def _jira_extra_fields() -> dict:
+    raw = os.getenv("JIRA_EXTRA_FIELDS", "").strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        logging.warning("[jira] JIRA_EXTRA_FIELDS is not valid JSON, ignoring")
+        return {}
+    return data if isinstance(data, dict) else {}
+
+def _jira_env_name() -> str:
+    return os.getenv("AUTO_RETRY_ENV_NAME", "").strip()
+
+def _jira_notify_enabled() -> bool:
+    raw = os.getenv("JIRA_NOTIFY_ON_FINAL_FAILURE", "").strip().lower()
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    if not _jira_env_name():
+        # AUTO_RETRY_ENV_NAME이 없으면 로컬 실행으로 간주하고 Jira 이슈를 만들지 않는다.
+        return False
+    return bool(_jira_base_url() and _jira_email() and _jira_api_token())
+
+def _jira_test_label(test_name: str) -> str:
+    slug = re.sub(r'[^A-Za-z0-9_-]+', '-', test_name).strip('-').lower()
+    return f"autoretry-{slug}"[:180]
+
+def _jira_summary_line(classification_text: str, failure_text: str, limit: int = 200) -> str:
+    text = (classification_text or failure_text or "").strip()
+    first_line = " ".join(text.splitlines()[0].split()) if text else ""
+    if len(first_line) <= limit:
+        return first_line
+    return first_line[: limit - 3] + "..."
+
+def _jira_issue_summary(test_name: str, classification_text: str, failure_text: str) -> str:
+    env = _jira_env_name() or "로컬"
+    line = _jira_summary_line(classification_text, failure_text) or test_name
+    return f"[smartRetry][{env}] {line}"[:255]
+
+def _jira_auth_header() -> str:
+    token = base64.b64encode(f"{_jira_email()}:{_jira_api_token()}".encode("utf-8")).decode("ascii")
+    return f"Basic {token}"
+
+def _jira_request(method: str, url: str, payload: dict = None) -> dict:
+    body = json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = request.Request(
+        url=url, data=body, method=method,
+        headers={"Content-Type": "application/json", "Authorization": _jira_auth_header()},
+    )
+    try:
+        with request.urlopen(req, timeout=_ai_timeout()) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except error.HTTPError as exc:
+        raise RuntimeError(f"HTTP {exc.code}: {exc.read().decode('utf-8', errors='replace')}") from exc
+    except error.URLError as exc:
+        raise RuntimeError(f"Connection error: {exc.reason}") from exc
+
+def _adf_paragraph(text: str) -> dict:
+    return {"type": "paragraph", "content": [{"type": "text", "text": text}] if text else []}
+
+def _adf_codeblock(code: str) -> dict:
+    return {"type": "codeBlock", "attrs": {}, "content": [{"type": "text", "text": code}]}
+
+def _text_to_adf(text: str) -> dict:
+    content = []
+    segments = re.split(r'```(?:\w+)?\n?([\s\S]*?)```', text)
+    for i, segment in enumerate(segments):
+        if i % 2 == 1:
+            if segment.strip():
+                content.append(_adf_codeblock(segment.strip()))
+            continue
+        for para in segment.strip("\n").split("\n\n"):
+            para = para.strip()
+            if para:
+                content.append(_adf_paragraph(para))
+    if not content:
+        content = [_adf_paragraph(text or "")]
+    return {"type": "doc", "version": 1, "content": content}
+
+def _split_jira_recommendation(analysis: str) -> tuple:
+    """AI 분석에서 '수정 권장 사항' 섹션만 분리 (댓글로 따로 달기 위함).
+
+    모델마다 헤더 표기가 "3. 수정 권장 사항", "**수정 권장 사항**", "### 수정 권장 사항" 등으로
+    제각각이라 번호/마크다운 기호를 모두 선택적으로 허용한다.
+    """
+    if not analysis:
+        return "", ""
+    pattern = r'\n\s*(?:#{1,6}\s*)?(?:\*\*)?(?:\d+[.\)]\s*)?수정\s*권장\s*사항(?:\*\*)?\s*:?\s*\n?'
+    match = re.search(pattern, analysis)
+    if not match:
+        return analysis.strip(), ""
+    return analysis[:match.start()].strip(), analysis[match.start():].strip()
+
+def _build_jira_description(test_name: str, error_type: str, failure_text: str, analysis: str) -> dict:
+    main_analysis, _ = _split_jira_recommendation(analysis)
+    header = (
+        f"Test: {test_name}\n"
+        f"Error Type: {error_type or 'Unknown'}\n"
+        f"Generated At: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+    excerpt = _excerpt(failure_text, limit=3000)
+    body_text = f"{header}\n\nAI 분석\n{main_analysis or '(분석 없음)'}\n\n실패 로그\n```\n{excerpt}\n```"
+    return _text_to_adf(body_text)
+
+def _jira_add_recommendation_comment(issue_key: str, fix_text: str) -> None:
+    url = f"{_jira_base_url()}/rest/api/3/issue/{issue_key}/comment"
+    body_text = f"💡 참고용 (AI 수정 권장 사항)\n\n{fix_text}"
+    _jira_request("POST", url, {"body": _text_to_adf(body_text)})
+
+def _jira_find_open_issue(label: str) -> str:
+    url = f"{_jira_base_url()}/rest/api/3/search/jql"
+    jql = f'project = "{_jira_project_key()}" AND labels = "{label}" AND statusCategory != Done ORDER BY created DESC'
+    data = _jira_request("POST", url, {"jql": jql, "maxResults": 1, "fields": ["key"]})
+    issues = data.get("issues") or []
+    return issues[0]["key"] if issues else ""
+
+def _jira_create_issue(test_name: str, error_type: str, failure_text: str, analysis: str,
+                       label: str, classification_text: str = "") -> str:
+    url = f"{_jira_base_url()}/rest/api/3/issue"
+    payload = {
+        "fields": {
+            "project": {"key": _jira_project_key()},
+            "summary": _jira_issue_summary(test_name, classification_text, failure_text),
+            "issuetype": {"name": _jira_issue_type()},
+            "description": _build_jira_description(test_name, error_type, failure_text, analysis),
+            "labels": ["auto-retry", label],
+            **_jira_extra_fields(),
+        }
+    }
+    data = _jira_request("POST", url, payload)
+    issue_key = data.get("key", "")
+    if issue_key:
+        _, fix_text = _split_jira_recommendation(analysis)
+        if fix_text:
+            try:
+                _jira_add_recommendation_comment(issue_key, fix_text)
+            except Exception as exc:
+                logging.warning(f"[jira] failed to add recommendation comment for {issue_key}: {exc}")
+    return issue_key
+
+def _jira_add_comment(issue_key: str, error_type: str, failure_text: str, analysis: str) -> None:
+    url = f"{_jira_base_url()}/rest/api/3/issue/{issue_key}/comment"
+    body_text = (
+        f"재발 감지 ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})\n"
+        f"Error Type: {error_type or 'Unknown'}\n\n"
+        f"AI 분석\n{analysis or '(분석 없음)'}\n\n"
+        f"실패 로그\n```\n{_excerpt(failure_text, limit=2000)}\n```"
+    )
+    _jira_request("POST", url, {"body": _text_to_adf(body_text)})
+
+def _create_or_update_jira_issue(test_name: str, error_type: str, failure_text: str,
+                                 analysis: str, classification_text: str = "") -> tuple:
+    if not _jira_notify_enabled():
+        return "", ""
+    label = _jira_test_label(test_name)
+    try:
+        issue_key = _jira_find_open_issue(label)
+        if issue_key:
+            _jira_add_comment(issue_key, error_type, failure_text, analysis)
+        else:
+            issue_key = _jira_create_issue(test_name, error_type, failure_text, analysis, label, classification_text)
+        if issue_key:
+            return issue_key, f"{_jira_base_url()}/browse/{issue_key}"
+    except Exception as exc:
+        logging.error(f"[jira issue failed] {test_name}: {exc}")
+    return "", ""
 
 
 # ── NAS 백업 ─────────────────────────────────────────────────────────────────
@@ -761,8 +966,14 @@ def _on_final_failure(item, longrepr: str, error_type: str,
         if screenshot_path:
             logging.info(f"[nas report] {item.nodeid} → {screenshot_path}")
 
-    _notify_slack_final_failure(item.nodeid, final_error_type, longrepr, analysis, report_path)
-    _notify_teams_final_failure(item.nodeid, final_error_type, longrepr, analysis, screenshot_path)
+    jira_key, jira_url = _create_or_update_jira_issue(
+        item.nodeid, final_error_type, longrepr, analysis, classification_text
+    )
+    if jira_key:
+        logging.info(f"[jira issue] {item.nodeid} → {jira_key}")
+
+    _notify_slack_final_failure(item.nodeid, final_error_type, longrepr, analysis, report_path, jira_url)
+    _notify_teams_final_failure(item.nodeid, final_error_type, longrepr, analysis, screenshot_path, jira_key, jira_url)
 
 
 # ── pytest hook ──────────────────────────────────────────────────────────────
