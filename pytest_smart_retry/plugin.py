@@ -70,6 +70,11 @@ def pytest_addoption(parser):
     group = parser.getgroup("auto_retry")
     group.addoption("--auto-retry-max", type=int, default=None,
                     help="재시도 횟수 (기본값: auto_retry_max ini 옵션 또는 2)")
+    parser.addini("auto_retry_max", help="재시도 횟수 (기본값 2)", default=None)
+    parser.addini("auto_retry_driver_fixture", help="드라이버 fixture 이름", default=None)
+    parser.addini("auto_retry_frame_pattern", help="스택 필터 정규식", default=None)
+    parser.addini("auto_retry_utility_files",
+                  help="AI 분석 시 호출부에서 제외할 공통 유틸 파일명 (콤마 구분)", default=None)
 
 def pytest_sessionstart(session):
     output_dir = _ai_output_dir()
@@ -91,13 +96,6 @@ def pytest_configure(config):
         "markers",
         "auto_retry: retry Timeout/Network style failures up to auto_retry_max times",
     )
-    config.addinivalue_line("ini_options", "auto_retry_max (int): 재시도 횟수 (기본값 2)")
-    config.addinivalue_line("ini_options", "auto_retry_driver_fixture (str): 드라이버 fixture 이름")
-    config.addinivalue_line("ini_options", "auto_retry_frame_pattern (str): 스택 필터 정규식")
-    config.addinivalue_line(
-        "ini_options",
-        "auto_retry_utility_files (str): AI 분석 시 호출부에서 제외할 공통 유틸 파일명 (콤마 구분)",
-    )
 
 
 def _retry_max(config=None) -> int:
@@ -105,7 +103,7 @@ def _retry_max(config=None) -> int:
         cli = config.getoption("--auto-retry-max", default=None)
         if cli is not None:
             return cli
-        ini = config.getini("auto_retry_max") if "auto_retry_max" in config._inicache else None
+        ini = config.getini("auto_retry_max")
         if ini:
             return int(ini)
     return int(os.getenv("AUTO_RETRY_MAX", "2"))
@@ -113,7 +111,7 @@ def _retry_max(config=None) -> int:
 
 def _driver_fixture_name(config=None) -> str:
     if config:
-        ini = config.getini("auto_retry_driver_fixture") if "auto_retry_driver_fixture" in config._inicache else None
+        ini = config.getini("auto_retry_driver_fixture")
         if ini:
             return str(ini)
     return os.getenv("AUTO_RETRY_DRIVER_FIXTURE", "set_driver")
@@ -121,7 +119,7 @@ def _driver_fixture_name(config=None) -> str:
 
 def _frame_pattern(config=None) -> str:
     if config:
-        ini = config.getini("auto_retry_frame_pattern") if "auto_retry_frame_pattern" in config._inicache else None
+        ini = config.getini("auto_retry_frame_pattern")
         if ini:
             return str(ini)
     return os.getenv("AUTO_RETRY_FRAME_PATTERN", "")
@@ -130,7 +128,7 @@ def _frame_pattern(config=None) -> str:
 def _utility_files(config=None) -> tuple:
     raw = ""
     if config:
-        ini = config.getini("auto_retry_utility_files") if "auto_retry_utility_files" in config._inicache else None
+        ini = config.getini("auto_retry_utility_files")
         if ini:
             raw = str(ini)
     if not raw:
