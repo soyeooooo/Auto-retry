@@ -30,8 +30,8 @@ pytest.ini 옵션:
 - auto_retry_utility_files = a.py,b.py    (AI 분석 시 호출부에서 제외할 공통 유틸 파일명, 콤마 구분, 기본값 없음)
 
 Jira 이슈 등록 (선택):
-- JIRA_BASE_URL=https://meditcompany.atlassian.net
-- JIRA_EMAIL=me@meditcompany.com
+- JIRA_BASE_URL=https://your-domain.atlassian.net
+- JIRA_EMAIL=you@example.com
 - JIRA_API_TOKEN=...                      (https://id.atlassian.com/manage-profile/security/api-tokens 에서 발급)
 - JIRA_PROJECT_KEY=QAT                    (기본값 QAT)
 - JIRA_ISSUE_TYPE=Bug                     (기본값 Bug)
